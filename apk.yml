@@ -1,0 +1,179 @@
+name: Build APK v2
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Aceitar licencas do Android SDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Criar projeto
+        run: |
+          set -e
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "ModoRoblox"
+          include(":app")
+          EOF_FILE
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_FILE
+          cat > gradle.properties <<'EOF_FILE'
+          android.useAndroidX=false
+          EOF_FILE
+          mkdir -p app
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.example.modoroblox"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.modoroblox"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF_FILE
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+              <application
+                  android:label="Modo Roblox"
+                  android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/modoroblox
+          cat > app/src/main/java/com/example/modoroblox/MainActivity.kt <<'EOF_FILE'
+          package com.example.modoroblox
+
+          import android.app.Activity
+          import android.app.ActivityManager
+          import android.app.NotificationManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ApplicationInfo
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.WindowManager
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class MainActivity : Activity() {
+
+              private val robloxPkg = "com.roblox.client"
+              private lateinit var status: TextView
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setPadding(48, 48, 48, 48)
+                  }
+                  status = TextView(this).apply {
+                      text = "Pronto. Toque para ativar."
+                      textSize = 16f
+                      gravity = Gravity.CENTER
+                  }
+                  val ativar = Button(this).apply {
+                      text = "🎮 Ativar Modo Roblox"
+                      setOnClickListener { ativarModo() }
+                  }
+                  val desativar = Button(this).apply {
+                      text = "Desativar (voltar ao normal)"
+                      setOnClickListener { desativarModo() }
+                  }
+                  root.addView(status)
+                  root.addView(ativar)
+                  root.addView(desativar)
+                  setContentView(root)
+              }
+
+              private fun ativarModo() {
+                  val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+                  // 1) Não perturbe (precisa de permissão uma única vez)
+                  if (!nm.isNotificationPolicyAccessGranted) {
+                      Toast.makeText(this, "Permita o acesso ao Não Perturbe e volte.", Toast.LENGTH_LONG).show()
+                      startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                      return
+                  }
+                  nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+
+                  // 2) Encerra apps em segundo plano (exceto sistema, este app e o Roblox)
+                  val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                  var count = 0
+                  for (app in packageManager.getInstalledApplications(0)) {
+                      val isSystem = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                      if (isSystem || app.packageName == packageName || app.packageName == robloxPkg) continue
+                      am.killBackgroundProcesses(app.packageName)
+                      count++
+                  }
+
+                  // 2b) Mantém a tela ligada
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+                  status.text = "Modo Roblox ativo.\n$count apps encerrados em segundo plano,\nNão Perturbe ligado."
+
+                  // 3) Abre o Roblox
+                  val launch = packageManager.getLaunchIntentForPackage(robloxPkg)
+                  if (launch != null) startActivity(launch)
+                  else Toast.makeText(this, "Roblox não está instalado.", Toast.LENGTH_LONG).show()
+              }
+
+              private fun desativarModo() {
+                  val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  if (nm.isNotificationPolicyAccessGranted) {
+                      nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+                  }
+                  window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  status.text = "Modo normal restaurado."
+              }
+          }
+          EOF_FILE
+      - name: Compilar
+        run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ModoRoblox-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
